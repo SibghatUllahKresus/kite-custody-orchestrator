@@ -1,27 +1,92 @@
 # KITE Custody Orchestrator
 
-Client-facing API for the KITE custody solution. Handles organizations, wallets, users, and the full transaction flow (create, sign, broadcast). Calls **KITE Custody Vault** internally for wallet and signing operations.
+Client-facing API for KITE custody services.
 
-**Standalone:** deploy on its own instance. Clients and the SDK use only this service.
+The Orchestrator handles:
+
+- Organization + API key management
+- API-key authenticated wallet/user APIs
+- Transaction utilities (nonce, gas, tx creation)
+- Signing delegation to KITE Custody Vault
+- Transaction broadcasting to chain RPC
+
+Clients and the SDK should call this service, not the Vault directly.
+
+## Architecture
+
+- Express API with Swagger docs at `/api-docs`
+- PostgreSQL for organization records and API key lookup
+- Vault client for wallet/user/sign operations
+- Transaction service for native/ERC20 unsigned tx creation
+- Broadcast service for signed tx submission
 
 ## Prerequisites
 
 - Node.js 18+
-- PostgreSQL (organizations)
+- PostgreSQL
+- KITE Custody Vault deployed and reachable
 
 ## Environment
 
-Copy `.env.example` to `.env`:
+Copy `.env.example` to `.env`.
 
-| Variable | Description |
-|----------|-------------|
-| `PORT` | Server port (e.g. `8000`) |
-| `NODE_ENV` | `production` or `development` |
-| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Basic auth for Create Organization |
-| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | PostgreSQL |
-| `WALLET_SERVICE_URL` | Full URL of the KITE Custody Vault (no trailing slash) |
-| `WALLET_SERVICE_API_KEY` | Must match Vault’s `ALLOWED_API_KEY` |
-| `VAULT_REQUEST_TIMEOUT_MS` | Optional; default `30000`. Increase (e.g. `60000`) if wallet creation times out. |
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `PORT` | No | `3000` | HTTP port |
+| `NODE_ENV` | No | `development` | `development`, `production`, or `test` |
+| `ADMIN_EMAIL` | Yes | - | Basic auth username for admin org endpoints |
+| `ADMIN_PASSWORD` | Yes | - | Basic auth password (min 8 chars) |
+| `VAULT_REQUEST_TIMEOUT_MS` | No | `30000` | Timeout for Vault requests, allowed `5000-120000` |
+| `POSTGRES_HOST` | Yes | - | Postgres host |
+| `POSTGRES_PORT` | No | `5432` | Postgres port |
+| `POSTGRES_DB` | No | `postgres` | Postgres database |
+| `POSTGRES_USER` | Yes | - | Postgres user |
+| `POSTGRES_PASSWORD` | Yes | - | Postgres password |
+| `WALLET_SERVICE_URL` | Yes | `http://localhost:3001` | Vault base URL |
+| `WALLET_SERVICE_API_KEY` | Yes | - | Shared secret used when calling Vault |
+
+## Auth model
+
+- Admin endpoints use `Authorization: Basic ...` (`ADMIN_EMAIL` + `ADMIN_PASSWORD`)
+- Client endpoints use `X-API-Key` (organization API key from `/api/organizations`)
+
+## Endpoints
+
+### Public
+
+- `GET /health`
+- `GET /api-docs`
+
+### Admin (Basic auth)
+
+- `POST /api/organizations` create organization and return API key
+- `GET /api/organizations/:organizationId` get organization details
+
+### Client (X-API-Key)
+
+- Wallets:
+`POST /api/wallets`
+`GET /api/wallets`
+`GET /api/wallets/:walletId`
+`GET /api/wallets/users/:email/wallets`
+- Users:
+`GET /api/users`
+`GET /api/users/:email`
+- Transactions:
+`POST /api/transactions/nonce`
+`POST /api/transactions/gas-prices`
+`POST /api/transactions/gas-price`
+`POST /api/transactions/native`
+`POST /api/transactions/erc20`
+`POST /api/transactions/sign`
+`POST /api/transactions/broadcast`
+
+## Transaction flow
+
+1. Client calls nonce/gas endpoints.
+2. Client calls `/api/transactions/native` or `/api/transactions/erc20` to create unsigned raw tx.
+3. Client calls `/api/transactions/sign`; Orchestrator forwards to Vault with organization context.
+4. Client calls `/api/transactions/broadcast`; Orchestrator sends signed tx to the RPC node.
 
 ## Build and run
 
@@ -31,15 +96,29 @@ npm run build
 npm start
 ```
 
-Development: `npm run dev`. Default port `3000`. Swagger: `http://localhost:3000/api-docs`.
+Development mode:
 
-## Deployment
+```bash
+npm run dev
+```
 
-- **Deploy the Vault first.** On startup the Orchestrator calls the Vault’s `/health` (5s timeout). If the Vault is unreachable, the Orchestrator exits instead of starting.
-- Deploy this service on one instance. Set `WALLET_SERVICE_URL` to the deployed Vault URL.
-- Clients receive this service’s URL and their organization API key (from Create Organization).
+Local docs:
 
-## Related
+- [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
 
-- **KITE Custody Vault** – internal custody backend; Orchestrator calls it.
-- **KITE Custodial SDK** – clients use the SDK with this Orchestrator URL and API key.
+## Startup behavior
+
+- Orchestrator initializes PostgreSQL schema before listening.
+- Orchestrator checks Vault `/health` during startup.
+- Startup fails if Postgres or Vault is not reachable.
+
+## Deployment notes
+
+- Deploy Vault first.
+- Keep Vault internal/private; only Orchestrator should reach it.
+- Give clients only the Orchestrator URL + organization API key.
+
+## Related services
+
+- KITE Custody Vault (internal signer and shard storage service)
+- KITE Custodial SDK (client library for this API)
